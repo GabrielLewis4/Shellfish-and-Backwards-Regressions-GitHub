@@ -1,0 +1,502 @@
+---
+title: "Shellfish and Backwards Regressions"
+output:
+  html_document:
+    df_print: paged
+---
+
+```{r, setup}
+library(tidyverse)
+library(latex2exp)
+library(gridExtra)
+```
+
+Suppose we have a reasonably good regression model for the distribution of ocean temperatures at each day of the year. However, we'd like to predict the day-of-year which produced an observed temperature, or the day on which sequence of temperatures ended. More generally, for any given value of a possibly multivariate outcome $z^*$ we'd like to estimate or predict the values of the regressors $w$ that produced $z^*$. Less precisely, we'd like to run a regression backwards.
+
+Secondly, we may have a set of temperature-sequences, and we may want to estimate the *distribution* of end-times of such sequences over the year. That is, we want a posterior distribution over probability distributions over the year. 
+
+#Bayes is useful for going backwards
+Given our data, we want to know $\Pr(w^*\in A|z=z^*)$ for any interval $A$, but our regression model is framed in terms of $p(z|w,\theta)$, where $\theta$ comprises the unknown parameters of the regression model. As one might suspect, Bayes' theorem is helpful here. In fact, it's helpful twice.
+
+If we are to predict values of $w$, we must augment our regression model $p(z|w,\theta)$ with a model of the process that produces $w$, $p(w|\lambda)$; this gives us a full joint model of all observed variables, $p(z|w,\theta)p(z|w,\theta)=p(z,w|\theta,\lambda)$.
+
+By assuming that the model factorizes as above, we've made a key assumption: informally, that $\lambda$ affects $z$ only through $w$ ; in other words, any unobserved causes of $w$ are not also direct causes of $z$. This is a strong form of the standard unconfoundedness assumption for regressions.
+
+With prior distributions $p(\theta), p(\lambda)$ over the unknowns, and assuming independently and identically distributed data $D=\{(z_i,w_i)\}_{i=1}^n$ (we can relax iid assumptions later), Bayes' Theorem tells us the posterior distribution:
+
+$$
+p(\theta,\lambda|D)\propto \prod_i p(z_i|w_i,\theta)(w_i|\lambda)p(\theta)p(\lambda)
+$$
+
+
+The posterior distribution allows us to represent the predictive distribution of interest as follows: 
+
+$$
+p(w^*|z=z^*,D) = \int p(w^*|z=z^*,\theta,\lambda)p(\theta,\lambda|D)d\theta d\lambda
+$$
+
+Applying Bayes' Theorem again, we can represent $p(w^*|z=z^*,\theta,\lambda)$ in terms of our data-generating model:
+
+$$
+p(w^*|z=z^*,\theta,\lambda)=\frac{p(z^*|w^*,\theta)p(w^*|\lambda)}{\int p(z^*|w^*,\theta)p(w^*|\lambda)dw^*}
+$$
+
+It's worth emphasising that $\Pr(w^*=r_k|z=z^*)$ corresponds to a *particular* shell with observed temperature $z^*$, whereas $\lambda_k$ corresponds to $\Pr(w=r_k)$ for a *generic* shell without an observed temperature.
+
+The above integral may not always be straightforward to evaluate. However, we'll use a Multinomial model for $w$ that makes it relatively easy, and that's plausible whenever $p(w^*|\lambda)}$ can reasonably be approximated by a finite-dimensional distribution or a histogram. Suppose $w$ assumes a large but finite set of values $r_j$, $j=1,...,J$, and $\lambda_j$ are the corresponding probabilities of assuming these values. This is a multinomial model:
+
+$$p(w|\lambda)= \prod_j^J \lambda_j^{[w=r_j]}$$
+
+The conjugate prior is a Dirichlet with parameters $\alpha _j$,
+
+$$p(\lambda) \propto \prod_j^J \lambda_j^{\alpha_j}$$
+
+With this model, the integral reduces to a sum:
+
+$$
+\Pr(w^* = r_k|z=z^*,\theta,\lambda)=\frac{p(z^*|r_k,\theta)\lambda_k}{\sum_{j=1}^J p(z^*|r_j,\theta)\lambda_j}
+$$
+
+
+This gives us a simple strategy for approximating $p(w^*|z=z^*,D)$. First, draw a large number $S$ simulations $(\theta_{(s)},\lambda_{(s)})$ $s=1,\dots,  S$from the posterior distribution $p(\theta,\lambda|D)$. Then take the average:
+
+$$
+\Pr(w^* = r_k|z=z^*) \approx
+\frac{1}{S}\sum_s
+\frac{p(z^*|r_k,\theta_{(s)})\lambda_{k(s)}}{\sum_{j=1}^J p(z^*|r_j,\theta_{(s)})\lambda_{j(s)}}
+$$
+
+The downside of this approach is that it requires separate simulations for each possible day-of-year $r_k$, which can be quite computationally expensive.
+
+#A simple large-sample approximation
+
+Before simulating the above model in full, we'll consider a much simpler large-sample approximation where the regression-parameters $\theta$ are fixed at the OLS point estimates, $r_k$ are simply the observed values of $w$, and where $\lambda_j$ are all fixed at  1/n. This approximates our full model in the case where the regression parameters $\theta$ are all estimated with very high precision, and we have prior certainty that the population marginal distribution of $w$ is uniform over times of year (an innocuous assumption for learning about individual shells, but not for learning about the population marginal distribution of $w$).
+
+Below, we have the data in black, the true mean-function is the black line, and the model estimates are blue.
+
+```{r}
+
+#Generate data
+n1 <- 100
+dat1 <-tibble(
+  w = runif(n = n1),
+  mean_z = sin(2*pi*w),
+  z = mean_z + rnorm(n = n1, sd = 0.25),
+  bin_z = round(mean_z, digits = 1)
+) %>% group_by(bin_z) %>% mutate(
+  mean_w = mean(w, na.rm = T)
+)
+
+reg_row <- function(w){
+  cbind(1, sin(2*pi*w), cos(2*pi*w))
+}
+
+#Set fixed quantities
+mod1 <- lm(z ~ 0 + reg_row(w), dat1)
+
+dat1 <- dat1 %>% ungroup() %>%  mutate(
+  z_pred = mod1$fitted.values 
+)
+
+dat1 %>% ggplot() + 
+  geom_point(aes(x = w, y = z)) + 
+  geom_line(aes(x = w, y = mean_z)) + 
+  geom_point(aes(x = w, y = z_pred), color = "blue") 
+
+```
+
+
+
+Below, we roughly estimate posterior probabilities of the days-of-year that could have produced a given temperature (for a random sample of days, just for convenience). Notice that the probabilities peak in two places.
+```{r}
+
+#Pick any z_star of interest
+z_star <- 0.25
+
+#Calculate probabilities
+dat1_out <- dat1 %>% 
+  mutate(
+  pr_z_given_r_theta = dnorm(x = z_star, mean = mod1$fitted.values, sd = summary(mod1)$sigma)
+) %>% mutate(
+  pr_w_given_z = pr_z_given_r_theta/sum(pr_z_given_r_theta)
+)
+
+
+#Plot output
+p1 <- dat1_out %>% ggplot() + 
+  geom_point(aes(x = w, y = z)) + 
+  geom_line(aes(x = w, y = mean_z)) + 
+  geom_point(aes(x = w, y = z_pred), color = "blue") +
+  geom_abline(slope = 0, intercept = z_star, color = "red")
+
+p2 <- dat1_out %>% ggplot() + geom_point(aes(x = w, y = pr_w_given_z), color = "red")
+
+grid.arrange(p1, p2, ncol = 1)
+
+```
+
+The above approximation does not incorporate our estimation uncertainty about the regression-function or about the marginal distribution of $w$. Consequently, we can expect the large-sample approximation to be overconfident if these uncertainties are not actually negligible.
+
+
+#Simulation 2: univariate outcome, full parameter uncertainties
+Here, we run the full  
+
+```{r make-samplers}
+#Generate test data
+n1 <- 50
+dat1 <-tibble(
+  w = runif(n = n1),
+  mean_z = sin(2*pi*w),
+  z = mean_z + rnorm(n = n1, sd = 0.25),
+  bin_z = round(mean_z, digits = 1)
+) %>% group_by(bin_z) %>% mutate(
+  mean_w = mean(w, na.rm = T)
+)
+
+#Create the mean-function of the regression model
+reg_row <- function(w){
+  cbind(1, sin(2*pi*w), cos(2*pi*w))
+}
+reg_row(w = 2*pi*c(1,1.5)) #Test
+
+#Create Pr(z|w,beta, sigma)
+p_z_given_w <- function(z, w, Beta, Sigmasq, reg_row, ...){
+  dnorm(z, mean = reg_row(w)%*%Beta, sd = sqrt(Sigmasq)) %>% t() %>% as.vector()
+}
+
+#Test p_z_given_w
+p_z_given_w(z = 0.1, 
+            w = 1:10/10, 
+            Beta = lm(z ~ 0 + reg_row(w), dat1)$coeff, 
+            Sigmasq = summary(mod1)$sigma^2, 
+            reg_row = reg_row)
+
+#Make Pr(w|z, beta, lambda)
+p_w_given_z <- function(z, w, Beta, Sigmasq, reg_row, p_z_given_w, ...){
+  Gamma <- rgamma(n = length(w), shape = 1, scale = 1) #this will be equivalent to the Dirichlet
+  p_z_given_w_0 <- p_z_given_w(z = z, w = w, Beta = Beta, Sigmasq = Sigmasq, reg_row = reg_row)
+  p_z_given_w_0*Gamma/sum(p_z_given_w_0*Gamma)
+}
+
+
+#Make a direct sampler for the regression posterior (basically OLS)
+ols_sampler <- function(reg_row, n_samples, data){
+  n1 <- nrow(dat1)
+  mod1 <- lm(z ~ 0 + reg_row(w), dat1)
+  beta_hat <- mod1$coeff
+  WtW_inv <- crossprod({mod1$model[,-1] %>% as.matrix()}) %>% solve()
+  
+  Sigmasq_sim <- 1/rgamma(n = n_samples, shape = n1 - 2, scale = 1/sum(mod1$residuals^2))
+  
+  Beta_sim_mat <- vapply(Sigmasq_sim, 
+                      function(x){brms::rmulti_normal(n = 1, mu = beta_hat, x*WtW_inv)}, FUN.VALUE = rep(1, length(beta_hat))) %>% t()
+  
+  colnames(Beta_sim_mat) <- str_c("Beta_", 1:ncol(Beta_sim_mat))
+  
+  #Output
+  bind_cols(
+    sample_id = 1:n_samples,
+    Sigmasq = Sigmasq_sim,
+    as_tibble(Beta_sim_mat)
+    )
+}
+
+```
+
+
+```{r run-model}
+
+#Set data for inference
+z_star <- 0.5 #Observed temperature
+w_vec <- (1:100)/100 # Possible days (values between zero and 1)
+
+#Generage fake regression data
+n1 <- 50
+dat1 <-tibble(
+  w = runif(n = n1),
+  mean_z = sin(2*pi*w),
+  z = mean_z + rnorm(n = n1, sd = 0.25),
+  bin_z = round(mean_z, digits = 1)
+) %>% group_by(bin_z) %>% mutate(
+  mean_w = mean(w, na.rm = T)
+)
+
+#Set regression model (for inferring E[z|w] )
+reg_row <- function(w){
+  cbind(1, sin(2*pi*w), cos(2*pi*w))
+}
+
+#--------------------------------#
+#Run posterior sampler
+n_samples <- 10000 #How many posterior draws
+
+#Posterior draws of regression parameters (beta, sigma) given data
+sim_dat_ols <- ols_sampler(reg_row = reg_row, n_samples = n_samples, data = dat1)
+
+#Posterior draws of Pr(w| beta, sigma, lambda) 
+post_sims <- sim_dat_ols %>% rowwise() %>% mutate(
+  sample_id = sample_id,
+  w_list = list(w_vec),
+  p_w_given_z_theta_list = list(
+    p_w_given_z_theta = p_w_given_z(
+      z = z_star, 
+      w = w_vec, 
+      Beta = c(Beta_1, Beta_2, Beta_3), 
+      Sigmasq = Sigmasq,
+      reg_row = reg_row,
+      p_z_given_w = p_z_given_w)
+    )
+  )
+
+#Reformat
+post_sims <- post_sims %>% select( sample_id, w_list, p_w_given_z_theta_list) %>% 
+  unnest(cols = c(w_list, p_w_given_z_theta_list))
+
+post_sims[1:1000,] %>% ggplot(aes(x = w_list, y = p_w_given_z_theta_list)) + geom_point()
+
+post_sim_summary <- post_sims %>% group_by(w_list) %>% summarise(
+  p_w_given_z = mean(p_w_given_z_theta_list)
+)
+
+post_sim_summary %>%  ggplot(aes(x = w_list, y = p_w_given_z)) + 
+  geom_point() + geom_line() + 
+  labs(title = "Posterior probability on each day") +
+  xlab("day") +
+  ylab("Probability")
+
+
+#HPD Interval
+post_sim_summary <- post_sim_summary %>% arrange(-p_w_given_z) %>% mutate(
+  in_HPD = factor(1*(cumsum(p_w_given_z) <= 0.95))
+)
+
+
+
+```
+
+```{r}
+p1 <- dat1 %>% ggplot() + 
+  geom_point(aes(x = w, y = z)) + 
+  geom_line(aes(x = w, y = mean_z)) +
+  geom_abline(slope = 0, intercept = z_star, color = "red")
+
+p2 <- post_sim_summary %>% ggplot() + geom_point(aes(x = w_list, y = p_w_given_z), color = "red")
+
+grid.arrange(p1, p2, ncol = 1)
+
+post_sim_summary %>%  ggplot(aes(x = w_list, y = p_w_given_z)) + geom_point(aes(color = in_HPD)) + geom_line()
+```
+
+
+#Multivariate version
+
+Here, we will observe sequences of temperatures with known time-intervals between them, but starting (and ending) at an unknown date. Here, we'll draw inferences about the unknown start date. Note: I should've programmed this to draw inferences about the end date.
+
+## Develop functions
+```{r}
+#Create functions  
+  reg_row <- function(w){
+  cbind(1, sin(2*pi*w), cos(2*pi*w))
+}
+
+
+#Set test parameters
+w_intervals_test <- c(0.1, 0.1, 0.05) #Time-intervals between 
+Beta_test = mod1$coef
+z_star = reg_row(cumsum(c(0.5, w_intervals_test)))%*%Beta_test %>% t() %>% as.vector()
+Sigmasq_test = summary(mod1)$sigma^2
+w_support_test = c(0.25, 0.35)
+w_list_test <- lapply(w_support_test, FUN = function(w){cumsum(c(w, w_intervals_test))})
+
+#Make functions   ####
+
+  #Version 1 (not vectorized)
+p_z_given_w_multi <- function(z, w, w_intervals = NULL, Beta, Sigmasq, reg_row, ...){
+  w_g <- cumsum(c(w, w_intervals))
+  n_g <- length(w_g)
+  mu = reg_row(w_g)%*%Beta %>% t() %>% as.vector
+  brms::dmulti_normal(z, mu = mu, Sigma = Sigmasq*diag(nrow = n_g))
+}
+
+#Version 2 (vectorized)
+p_z_given_w_multi <- function(z, w_list, Beta, Sigmasq, reg_row, ...){
+  sapply(w_list, function(w_g){
+  n_g <- length(w_g)
+  mu <-reg_row(w_g)%*%Beta %>% t() %>% as.vector
+  brms::dmulti_normal(z, mu = mu, Sigma = Sigmasq*diag(nrow = n_g))
+})
+}
+
+#Pr w given z
+p_w_given_z_multi <- function(z, w_list, Beta, Sigmasq, reg_row, p_z_given_w_multi, ...){
+  Gamma <- rgamma(n = length(w_list), shape = 1, scale = 1)
+  p_z_given_w_0 <- p_z_given_w_multi(z = z, w_list = w_list, Beta = Beta, Sigmasq = Sigmasq, reg_row = reg_row)
+  p_z_given_w_0*Gamma/sum(p_z_given_w_0*Gamma)
+}
+
+#Test
+
+p_z_given_w_multi(z = z_star, w_list = w_list_test, Beta = Beta_test, Sigmasq = summary(mod1)$sigma^2, reg_row = reg_row)
+
+p_w_given_z_multi(z = z_star, w_list = w_list_test, Beta = Beta_test, Sigmasq = summary(mod1)$sigma^2, reg_row = reg_row, p_z_given_w_multi = p_z_given_w_multi)
+
+
+#Make a simple OLS posterior direct sampler
+ols_sampler <- function(reg_row, n_samples, data){
+  n1 <- nrow(dat1)
+  mod1 <- lm(z ~ 0 + reg_row(w), dat1)
+  beta_hat <- mod1$coeff
+  WtW_inv <- crossprod({mod1$model[,-1] %>% as.matrix()}) %>% solve()
+  
+  Sigmasq_sim <- 1/rgamma(n = n_samples, shape = n1 - 2, scale = 1/sum(mod1$residuals^2))
+  
+  Beta_sim_mat <- vapply(Sigmasq_sim, 
+                      function(x){brms::rmulti_normal(n = 1, mu = beta_hat, x*WtW_inv)}, FUN.VALUE = rep(1, length(beta_hat))) %>% t()
+  
+  colnames(Beta_sim_mat) <- str_c("Beta_", 1:ncol(Beta_sim_mat))
+  
+  #Output
+  bind_cols(
+    sample_id = 1:n_samples,
+    Sigmasq = Sigmasq_sim,
+    as_tibble(Beta_sim_mat)
+    )
+  
+}
+
+```
+
+## Run
+This seems to work, although it could probably be sped up significantly.
+```{r}
+#Set data
+#Generate regression data
+n1 <- 50
+dat1 <-tibble(
+  w = runif(n = n1),
+  mean_z = sin(2*pi*w),
+  z = mean_z + rnorm(n = n1, sd = 0.5),
+  bin_z = round(mean_z, digits = 1)
+) %>% group_by(bin_z) %>% mutate(
+  mean_w = mean(w, na.rm = T)
+)
+
+
+#Set observation parameters
+  
+  reg_row <- function(w){
+  cbind(1, sin(2*pi*w), cos(2*pi*w))
+  }
+  
+  mod1 <- lm(z ~ 0 + reg_row(w), data = dat1)
+
+  Beta_test = mod1$coef
+  Sigmasq_test = summary(mod1)$sigma^2
+  
+  w_true_1 <- 0.5 #Actual first time-of-year
+  w_intervals_test <- c(0.1, 0.1, 0.05)
+  w_true_all <- cumsum(c(w_true_1, w_intervals_test))
+  z_star <- sin(2*pi*w_true_all) + rnorm(n = length(w_true_all), sd = 0.25)
+  
+  obs_dat <- tibble(w_true_all, z_star)
+
+  w_support_test = (1:365)/365
+  w_list_test <- lapply(w_support_test, FUN = function(w){cumsum(c(w, w_intervals_test))})
+  
+n_samples <- 1000
+
+#Run
+sim_dat_ols <- ols_sampler(reg_row = reg_row, n_samples = n_samples, data = dat1)
+  
+post_sims <- sim_dat_ols %>% rowwise() %>% mutate(
+  sample_id = sample_id,
+  w_support = list(w_support_test),
+  p_w_given_z_theta_list = list(
+    p_w_given_z_theta = p_w_given_z_multi(
+      z = z_star, 
+      w_list = w_list_test, 
+      Beta = c(Beta_1, Beta_2, Beta_3), 
+      Sigmasq = Sigmasq,
+      reg_row = reg_row,
+      p_z_given_w_multi = p_z_given_w_multi)
+    )
+  )
+
+post_sims <- post_sims %>% select(sample_id, w_support, p_w_given_z_theta_list) %>% 
+  unnest(cols = c(w_support, p_w_given_z_theta_list))
+
+post_sims[1:1000,] %>% ggplot(aes(x = w_support, y = p_w_given_z_theta_list)) + geom_point()
+
+post_sim_summary <- post_sims %>% group_by(w_support) %>% summarise(
+  p_w_given_z = mean(p_w_given_z_theta_list)
+)
+
+post_sim_summary %>%  ggplot(aes(x = w_support, y = p_w_given_z)) + geom_point() +
+  geom_point()
+
+
+
+
+#Check accuracy
+p1 <- dat1_out %>% ggplot() + 
+  geom_point(aes(x = w, y = z)) + 
+  geom_line(aes(x = w, y = mean_z)) + 
+  geom_point(aes(x = w, y = z_pred), color = "blue") +
+  geom_point(data = obs_dat, aes(x = w_true_all, y = z_star), color = "red", size = 2) + 
+  geom_abline(intercept = z_star, slope = 0, color = "red")
+
+p2 <-post_sim_summary %>%  ggplot(aes(x = w_support, y = p_w_given_z)) + geom_point() +
+  geom_point()
+
+grid.arrange(p1, p2, nrow = 2)
+
+
+```
+
+
+#Large-sample approximation in multivariate case
+```{r}
+
+post_sims_2 <- tibble(
+  w_support = w_support_test,
+  p_z_given_w= p_z_given_w_multi(
+      z = z_star, 
+      w_list = w_list_test, 
+      Beta = mod1$coef, 
+      Sigmasq = summary(mod1)$sigma^2,
+      reg_row = reg_row,
+      p_z_given_w_multi = p_z_given_w_multi)
+) %>% mutate(
+  p_w_given_z = p_z_given_w/sum(p_z_given_w)
+)
+
+p3 <- post_sims_2 %>%  ggplot(aes(x = w_support, y = p_w_given_z)) + geom_point() +
+  geom_point()
+
+grid.arrange(p1, p3, nrow = 2)
+
+
+```
+
+#Distribution from multiple shells
+Each shell produces a posterior probability distribution over the days of the year when it was harvested. How should we combine information across shells to yield a population distribution over the times of year when the shells were harvested? More precisely, we need a posterior distribution over the *distribution* of harvests throughout the year.
+
+One approach is to pretend each shell provides a fractional observation on each day, equal to the shell's posterior probability for that day, so that each shell's total contribution would be a single observation. Mathematically, this would mean considering each shell as a draw from a generalized multinomial (with Gamma functions replacing the factorials) over the days of the year. Were a shell's day-of-year perfectly known, it would be a single standard multinomial observation. The unknown parameters are probabilities for each day, and their conjugate prior would be a Dirichlet, as usual. This yields a Dirichlet posterior distribution whose expected value for each day will just be the average of the shells' posterior probabilities for that day, plus a prior weight. The variance (for each day) will diminish with the number of shells.
+
+The problem with such an approach is that it doesn't seem to correctly account for uncertainty. For example, if no shell were informative about its time-of-year, then all shell posterior distributions would be uniform; and using the above method, as the amount of shells increased, the posterior distribution would concentrate as though the population distribution of shell harvests were *known* (with increasing precision) to be uniform throughout the year. But in this case, the posterior distribution over harvest distributions ought to remain diffuse.
+
+The problem might come from prematurely averaging over the posterior distribution for each shell. Another approach is to consider the collection of all posterior draws from all shells for each time-of-year $r_k$. Again, the expected value of each day will be the average of all shells' posterior probabilities for that day, plus a prior weight. More promisingly, the variance will diminish only if the posterior draws do indeed concentrate in a small region of values for that day.
+
+Is it right that for estimating the time of the n+1 shell, we use a prior that doesn't seem affected by the preceding n observations? Furthermore, it seems as though each shell gets its own additional prior weight, meaning that more prior information is added with each shell. Alternatively, the truly correct way may be to take in the shells sequentially, with the posterior over the population distribution used as the prior for the next shell. We should show that this this appropriately exchangeable. We may have to actually do math and make a Gibbs sampler.
+
+Another thing to consider is the dynamics of shellfish harvests. In the same year, a heavy harvest at day $t$ may mean a lighter harvest at $t+1$.
+
+Harvests probably depend on the state of the shellfish crop, and therefore on temperatures, *jointly with time-of-year*. For example, the chance of harvest on a given day may be higher if it is summer with warm recent temperatures.
+
+
+#Appendix
+In standard regressions, the data-generating process of the regressors $w$, say $p(w|\lambda)$, where $\lambda$ are unobserved parameters of the process, is not modeled. Ignoring $p(w|\lambda)$ — or more politely, modeling $p(w|\lambda)$ separately from our regression — is valid only if the $w$-parameters $\lambda$ are actually irrelevant to inferences about the regression- parameters $\theta$. This generally holds only if certain independence assumptions are met:
+
+(1) $p(\theta, \lambda) = p(\theta) p(\lambda)$
+(2) $p(w|\theta,\lambda)=p(w|\lambda)$
+(3) $p(z|w,\theta,\lambda)=p(z|w,\theta)$
